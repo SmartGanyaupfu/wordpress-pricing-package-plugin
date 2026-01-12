@@ -3,7 +3,7 @@
  * Plugin Name: WooCommerce Pricing Table
  * Plugin URI: https://shanopx.com
  * Description: Creates pricing table with direct checkout for subscription packages
- * Version: 1.0.0
+ * Version: 1.0.1
  * Author: Smart Ganyaupfu
  * Author URI: https://shanopx.com
  * License: GPL v2 or later
@@ -30,6 +30,13 @@ class WC_Pricing_Table {
     }
     
     private function __construct() {
+        
+        add_action('init', function () {
+    if ( defined('DOING_AJAX') && DOING_AJAX ) {
+        wc_load_cart();
+    }
+});
+
         add_action('plugins_loaded', array($this, 'init'));
         add_action('admin_menu', array($this, 'add_admin_menu'));
         add_action('admin_notices', array($this, 'check_dependencies'));
@@ -366,29 +373,51 @@ jQuery(document).ready(function($) {
 JS;
     }
     
-    public function ajax_add_to_cart_and_checkout() {
-        check_ajax_referer('pricing_table_nonce', 'nonce');
-        
-        if (!isset($_POST['product_id'])) {
-            wp_send_json_error(array('message' => 'Product ID is required.'));
-        }
-        
-        $product_id = intval($_POST['product_id']);
-        
-        // Clear cart
-        WC()->cart->empty_cart();
-        
-        // Add product to cart
-        $added = WC()->cart->add_to_cart($product_id, 1);
-        
-        if ($added) {
-            wp_send_json_success(array(
-                'checkout_url' => wc_get_checkout_url()
-            ));
-        } else {
-            wp_send_json_error(array('message' => 'Failed to add product to cart.'));
-        }
+public function ajax_add_to_cart_and_checkout() {
+
+    check_ajax_referer('pricing_table_nonce', 'nonce');
+
+    // 🔥 ENSURE WC IS FULLY INITIALIZED (CRITICAL FOR GUEST USERS)
+    if ( null === WC()->session ) {
+        WC()->initialize_session();
     }
+
+    if ( null === WC()->customer ) {
+        WC()->customer = new WC_Customer( get_current_user_id(), true );
+    }
+
+    if ( null === WC()->cart ) {
+        WC()->cart = new WC_Cart();
+    }
+
+    // 🌍 Ensure customer location exists (fixes geolocation pricing & taxes)
+    $location = WC_Geolocation::geolocate_ip();
+    $country  = $location['country'] ?? wc_get_base_location()['country'];
+    $state    = $location['state'] ?? wc_get_base_location()['state'];
+
+    WC()->customer->set_location($country, $state);
+    WC()->customer->save();
+
+    if ( ! isset($_POST['product_id']) ) {
+        wp_send_json_error(['message' => 'Product ID is required.']);
+    }
+
+    $product_id = absint($_POST['product_id']);
+
+    // Reset cart to ensure single-plan checkout
+    WC()->cart->empty_cart();
+
+    $added = WC()->cart->add_to_cart($product_id, 1);
+
+    if ($added) {
+        wp_send_json_success([
+            'checkout_url' => wc_get_checkout_url()
+        ]);
+    }
+
+    wp_send_json_error(['message' => 'Failed to add product to cart.']);
+}
+
     
     public function add_admin_menu() {
         add_menu_page(
